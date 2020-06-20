@@ -1,0 +1,118 @@
+#!/bin/bash
+#
+#     Copyright (C) 2018 The Katsuna Project
+#     Copyright (C) 2018 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 0.5
+
+# Usage:
+# $ katsuna-build-local DEVICE_NAME ANDROID_VERSION (mm|nougat|oreo)
+# e.g. katsuna-build-local "bullhead|x86" "oreo"
+
+# Variables DO NOT EDIT
+device=$1
+version=$2
+
+# Color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Setting up generic script failure guards
+set -e
+set -o pipefail
+
+# Start of the main script
+
+# Check for at least 2 arguments, else abort
+if (( $# < 2 )); then
+    echo "${red}Illegal number of parameters!${reset}"
+    echo "${yellow}You should specify at least two arguments, DEVICE_NAME ANDROID_VERSION (mm|nougat|oreo)"
+    echo "e.g. 'katsuna-build-local bullhead oreo${reset}"
+    echo "Your input: katsuna-build-local $device $version"
+    exit 1
+fi
+
+# cd into correct branch (only dev branches locally)
+if [[ "$PWD" != *"/android/$version/dev"* ]]; then
+    cd android/$version/dev
+fi
+
+# Ask if a remote sync should be run
+echo ""
+read -p "Do you want to sync with the remote Katsuna servers first? ${yellow}(WARNING!: chance to lose local changes)${reset} (y/N)" -n 1 -r
+echo ""
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    katsuna-sync --force-sync
+fi
+unset REPLY
+
+# Tag the filename of a private build
+export EXTRA_BUILD_TAG=$(date +"%Hh%Im")-$type
+
+# Load the AOSP build environment
+source build/envsetup.sh
+
+# Ask if the build should be a clean (or dirty) one
+echo ""
+read -p "Should we try a clean build? (y/N)" -n 1 -r
+echo ""
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    # Clean old output
+    mka clean
+else
+    # delete only minimum components of the last build
+    mka dirty
+fi
+unset REPLY
+
+# Ask if we are building a complete OTA zip/image or a specific package
+echo ""
+read -p "Are we building everything? (y/N)" -n 1 -r
+echo ""
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    # Build whole image
+    target=full
+else
+    echo "Which package should we build?"
+    read -p "Enter package name: " target
+fi
+unset REPLY
+
+# Lunch the correct device configuration
+lunch katsuna_$device-userdebug
+echo "${Green}'$device' device configuration is correctly loaded!${reset}"
+
+# Start building
+if [ "$target" = "full" ]; then
+    if [ "$device" = "x86" ]; then
+        mka
+    else
+        mka otapackage
+    fi
+else
+    mka $target
+    echo "${yellow}Restarting adb as root, remounting as rw${reset}"
+    adb root && adb remount
+    echo "${green}Syncing files with adb..${reset}"
+    adb sync
+    echo "${yellow}Killing app/service on device...${reset}"
+    adb shell pkill $target
+fi
+
+# Completion notification
+echo "${green}katsuna-build-local finished.${reset}"

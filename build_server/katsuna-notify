@@ -1,0 +1,96 @@
+#!/bin/bash
+#
+#     Copyright (C) 2017 The Katsuna Project
+#     Copyright (C) 2017 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 1.4
+
+# Usage: katsuna-notify OTAFILENAME MD5HASH OTA_BUILD_UTC DEVICE_NAME API_LEVEL TYPE_NAME
+# e.g. katsuna-notify "katsuna-161021-bullhead-dev.zip" "MD5hash" "1523677081" "bullhead" "24" "dev"
+
+# Variables DO NOT Edit
+otafilename=$1
+otafilemd5=$2
+otabuildutc=$3
+device=$4
+api=$5
+type=$6
+
+# Color output
+if [[ $- == *i* ]]; then
+    green=`tput setaf 2`
+    cyan=`tput setaf 6`
+    red=`tput setaf 1`
+    yellow=`tput setaf 3`
+    reset=`tput sgr0`
+fi
+
+# Setting up generic script failure guards
+set -e
+set -o pipefail
+
+# Start of the main script
+
+# Check for 6 arguments, else abort
+if [ $# -ne 6 ]; then
+    echo "${red}Illegal number of parameters!${reset}"
+    exit 1
+fi
+
+# Write the public .json file
+# TODO: Support multiple builds and appending instead of replacing the file
+
+# Logic designed to separate dev and prod builds.
+# dev builds should only be deployed into the web1 server, and the json
+# file should point to the dev updater server
+if [ "$type" != "prod" ]; then
+cat <<EOT > /var/www/updater/dev/public/$device.json
+{
+ "id": null,
+ "result": [
+    {
+    "url": "http://hi.kitschuna.com/files",
+    "timestamp": "$otabuildutc",
+    "api_level": "$api",
+    "md5sum": "$otafilemd5",
+    "filename": "$otafilename",
+    "channel": "NIGHTLY",
+    "changes": "",
+    "incremental": ""
+    },
+  ],
+ "error": null
+}
+EOT
+else
+cat <<EOT > /var/www/updater/prod/public/$device-next.json
+{
+ "id": null,
+ "result": [
+    {
+    "url": "http://updater.katsuna.com/files",
+    "timestamp": "$otabuildutc",
+    "api_level": "$api",
+    "md5sum": "$otafilemd5",
+    "filename": "$otafilename",
+    "channel": "NIGHTLY",
+    "changes": "",
+    "incremental": ""
+    },
+  ],
+ "error": null
+}
+EOT
+fi

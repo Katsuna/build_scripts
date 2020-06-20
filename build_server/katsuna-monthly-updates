@@ -1,0 +1,335 @@
+#!/bin/bash
+#
+#     Copyright (C) 2018 The Katsuna Project
+#     Copyright (C) 2018 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 2.3
+
+# Usage:
+# $ katsuna-monthly-updates DOWNLOAD_URL AOSP_MERGE (true|false) (optional: JENKINS_INSTANCE (true|false))
+# e.g. katsuna-monthly-updates https://dl.google.com/dl/android/aosp/bullhead-opm3.171019.016-factory-6e4c89cb.zip true
+
+site=https://source.android.com/setup/start/build-numbers
+
+url=$1
+aosp_merge=$2
+jenkins=$3
+filename=$(echo $url | awk -F'/' '{print $7}')
+device=$(echo $filename | awk -F'-' '{print $1}')
+build_id=$(echo $filename | awk -F'-' '{print $2}')
+# build_id should be UPPERCASE as of 3/10/2018. That could change in the future per Google's desires
+tag=$(curl -s $site | sed -n "/${build_id^^}/{n;s:.*<td>\(.*\)</td>.*:\1:p}")
+
+# Compute Android version
+if [ "${build_id:0:1}" = "m" ]; then
+    version="mm"
+elif [ "${build_id:0:1}" = "n" ]; then
+    version="nougat"
+elif [ "${build_id:0:1}" = "o" ]; then
+    version="oreo"
+fi
+
+# Script variables
+type=dev
+
+# Color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Set up generic script failure guards
+set -o pipefail
+
+# Start of the main script
+
+# Check for at least 2 arguments, else abort
+if (( $# < 2 )); then
+    echo "${red}Illegal number of parameters!${reset}"
+    echo "${yellow}You should specify at least two arguments, DOWNLOAD_URL AOSP_MERGE"
+    echo "e.g. 'katsuna-monthly-updates https://dl.google.com/dl/android/aosp/bullhead-opm3.171019.016-factory-6e4c89cb.zip true'${reset}"
+    echo "Your input: katsuna-monthly-updates $url $aosp_merge $jenkins"
+    exit 1
+fi
+
+
+if [[ $aosp_merge == "true" ]]; then
+    # Merge the correspondent AOSP tag into the source
+    katsuna-monthly-merge $tag $version
+fi
+
+# Create base directory
+mkdir -p $HOME/firmware/
+
+# Clone or pull the Documentation repo
+if [ ! -d "$HOME/firmware/docs" ]; then
+    git clone git@github.com:Katsuna/Documentation.git $HOME/firmware/docs
+else
+    git -C "$HOME/firmware/docs" reset --hard HEAD^
+    git -C "$HOME/firmware/docs" pull --recurse-submodules
+fi
+
+# Set up simg2img link
+simg2img=$HOME/firmware/simg2img
+
+# Check if simg2img tool exists
+if [ ! -x $simg2img ]; then
+    echo "${yellow}Simg2img tool isn't installed, downloading...${reset}"
+    git clone https://github.com/anestisb/android-simg2img
+    cd android-simg2img
+    make
+    echo ""
+    cp simg2img ../firmware/
+    cd ../
+    rm -rf android-simg2img
+fi
+
+# Set up android-prepare-vendor link
+apv=$HOME/firmware/android-prepare-vendor/execute-all.sh
+
+# Check if android-prepare-vendor tool exists
+if [ ! -x $apv ]; then
+    echo "${yellow}android-prepare-vendor tool isn't installed, downloading...${reset}"
+    git clone https://github.com/anestisb/android-prepare-vendor $HOME/firmware/android-prepare-vendor
+fi
+
+# Create specific build directories
+mkdir -p $HOME/firmware/$device/$build_id
+cd $HOME/firmware/$device/$build_id
+
+# Download the image file
+echo "${green}Downloading factory image...${reset}"
+wget -c $url
+if [[ $? -ne 0 ]]; then
+    echo "${red}wget couldn't download the image. Aborting!${reset}"
+    exit 1
+fi
+
+# Execute the android-prepare-vendor image extraction tool
+# sudo is needed by non root users like ci (it's been added into the sudoers file)
+sudo $apv -d $device -b $build_id -i $filename -o . -f
+
+# Unzip
+unzip $filename
+unzip $device-$build_id/image-$device-$build_id.zip system.img -d $device-$build_id
+unzip $device-$build_id/image-$device-$build_id.zip vendor.img -d $device-$build_id
+
+# Rename & move
+mv $device-$build_id/system.img system-$device-$build_id.img
+mv $device-$build_id/vendor.img vendor-$device-$build_id.img
+mv $device-$build_id/bootloader-$device-*.img .
+mv $device-$build_id/radio-$device-*.img .
+
+# Fix permissions and move generated blob folder
+sudo chown -R $(whoami):$(whoami) $device
+mv $device/$build_id/vendor blobs
+
+manufacturer=$(ls blobs)
+system=$(ls | grep system)
+bootloader=$(ls | grep bootloader)
+radio=$(ls | grep radio)
+vendor=$(ls | grep vendor)
+
+# Extract fingerprint values
+# Convert android sparse image to ext filesystem image
+$simg2img $system $system.raw
+# Create a temp mount point and mount the ext image
+mkdir mount
+# sudo is needed by non root users like ci (it's been added into the sudoers file)
+sudo mount -o loop -t ext4 $system.raw mount
+# Fix permissions
+sudo chown -R $(whoami):$(whoami) mount
+# Get the build.prop Location (nexus vs pixel devices)
+prop=mount/build.prop
+if [ -f mount/system/build.prop ]; then
+    prop=mount/system/build.prop
+fi
+# Get the values
+fingerprint=$(cat $prop | grep ro.build.fingerprint | cut -d '=' -f 2)
+description=$(cat $prop | grep ro.build.description | cut -d '=' -f 2)
+patchdate=$(date -d"$(cat $prop | grep ro.build.version.security_patch | cut -d '=' -f 2)" +%b%y | tr "[:upper:]" "[:lower:]")
+
+# Check for manufacturer and not device so that you can still use the script for to-be-added devices
+if [ -d $HOME/android/$version/$type/vendor/$manufacturer ]; then
+    echo "${green}Katsuna OS $version source for the device found! Automatic blob extraction started...${reset}"
+    echo ""
+
+    # Blob extraction
+    cd blobs/$manufacturer/$device
+
+    # if the device is bullhead, remove GCS from the blobs
+    if [ $device == "bullhead" ]; then
+        rm -rf proprietary/priv-app/GCS
+    fi
+
+    # Copy over new blobs
+    if [ -d $HOME/android/$version/$type ]; then
+        cp -r proprietary/ $HOME/android/$version/$type/vendor/$manufacturer/$device/
+        echo "${green}Blobs copied/updated!${reset}"
+        echo ""
+    fi
+
+    # Prepare makefile diff zip
+    echo "${yellow}Preparing Makefile diff zip...${reset}"
+    echo ""
+    mkdir -p diff/current
+    for file in  $(ls $HOME/android/$version/$type/vendor/$manufacturer/$device/ | grep .mk); do
+        cp $HOME/android/$version/$type/vendor/$manufacturer/$device/$file diff/current/
+    done
+
+    mkdir -p  diff/$patchdate
+    for file in  $(ls . | grep .mk); do
+        cp ./$file diff/$patchdate/;
+    done
+
+    # Create the diff text
+    diff diff/current/ diff/$patchdate/ > diff/$patchdate.diff
+
+    # Zip up the contents
+    cd diff; zip -r ../$patchdate-diff.zip *; cd ../
+
+    # Upload the diff zip to transfer.sh
+    diff_link=$(curl --upload-file ./$patchdate-diff.zip https://transfer.sh/$device-$patchdate-diff.zip)
+    echo "${cyan}Link to diff.zip: $diff_link ${reset}"
+    echo ""
+
+    # Move the .zip up to the device/build_id folder
+    mv $patchdate-diff.zip ../../../
+
+    # Exit the blobs folder
+    cd ../../../
+else
+    echo "${yellow}NO Katsuna OS $version source found for $manufacturer/$device, skipping blobs extraction!${reset}"
+fi
+
+# Create makefile fingerprint stub
+cat <<EOT > fingerprint.mk
+# Fingerprint
+PRODUCT_BUILD_PROP_OVERRIDES += \\
+    PRODUCT_NAME=$device \\
+    BUILD_FINGERPRINT="$fingerprint" \\
+    PRIVATE_BUILD_DESC="$description"
+EOT
+
+# Calculate sha256 of files
+sha256sum $bootloader $radio $vendor >> sums.sha256
+
+# Fix permissions
+chmod 644 $bootloader $radio $system $vendor
+
+# Cleanup
+sudo umount mount
+rm -rf mount $system $system.raw $device-$build_id $device blobs $filename
+
+# Use scp to copy files into katsuna-web*
+# The ssh key pair is located in ~/.ssh of katsuna-build1
+# The definition of katsuna-web* host is in ~/.ssh/config of katsuna-build1
+# EXAMPLE:
+# Host katsuna-web1
+#    HostName ***.***.***.***
+#    User root
+#    IdentityFile ~/.ssh/id_build2web
+#    IdentitiesOnly yes
+
+if [[ -f $bootloader && -f $radio && -f $vendor ]]; then
+# Create directory if it doesn't exist
+ssh katsuna-web1 "mkdir -p /var/www/updater/$type/files/$device/extras"
+
+scp $bootloader katsuna-web1:/var/www/updater/$type/files/$device/extras/
+scp $radio katsuna-web1:/var/www/updater/$type/files/$device/extras/
+scp $vendor katsuna-web1:/var/www/updater/$type/files/$device/extras/
+echo "${green}Files pushed to katsuna-web1 ONLY (development) successfully!${reset}"
+else
+    echo "${red}Error: no such file or directory"
+    echo "${red}Files couldn't be pushed to katsuna-web1${reset}"
+    exit 1
+fi
+
+# Update the development docs
+if [ -f "../../docs/guides/development/$device.md" ]; then
+    sed -i -e "s/bootloader-.*\.img/$(basename $bootloader)/g" ../../docs/guides/development/$device.md
+    sed -i -e "s/radio-.*\.img/$(basename $radio)/g" ../../docs/guides/development/$device.md
+    sed -i -e "s/vendor-.*\.img/$(basename $vendor)/g" ../../docs/guides/development/$device.md
+    # Commit the changes
+    git -C "../../docs/" add guides/development/$device.md
+    git -C "../../docs/" commit -m "guides: Update $device dev build info"
+    git -C "../../docs/" push origin HEAD:master
+else
+    echo "${yellow}NO docs found for $device, skipping updating them!${reset}"
+fi
+
+# Update the vendor blobs
+if [ -d $HOME/android/$version/$type/vendor/$manufacturer ]; then
+    # Commit the changes
+    git -C "$HOME/android/$version/$type/vendor/$manufacturer/$device" add .
+    git -C "$HOME/android/$version/$type/vendor/$manufacturer/$device" commit -F- <<EOF
+Automatic $patchdate security update merge
+
+build id: $build_id
+requires board=$device
+requires bootloader=$bootloader
+requires baseband=$radio
+
+@dexter93: Here is the generated Makefile diff: $diff_link
+please look for any manual merge needed!
+EOF
+    git -C "$HOME/android/$version/$type/vendor/$manufacturer/$device" push katsuna HEAD:${version:0:1}
+    if [[ $? -eq 0 ]]; then
+        echo "${green}$patchdate blobs pushed to GitHub!${reset}"
+    else
+        echo "${red}Something went wrong, push to Github failed!${reset}"
+    fi
+
+fi
+
+# Update the fingerprints
+if [ -d $HOME/android/$version/$type ]; then
+    if [ -f "$HOME/android/$version/$type/vendor/katsuna/products/katsuna_$device.mk" ]; then
+        sed -i -e "s#BUILD_FINGERPRINT=\".*\"#BUILD_FINGERPRINT=\"$fingerprint\"#g" $HOME/android/$version/$type/vendor/katsuna/products/katsuna_$device.mk
+        sed -i -e "s#PRIVATE_BUILD_DESC=\".*\"#PRIVATE_BUILD_DESC=\"$description\"#g" $HOME/android/$version/$type/vendor/katsuna/products/katsuna_$device.mk
+        # Commit the changes
+        git -C "$HOME/android/$version/$type/vendor/katsuna" add products/katsuna_$device.mk
+        git -C "$HOME/android/$version/$type/vendor/katsuna" commit -m "$device: Add $patchdate fingerprints"
+        git -C "$HOME/android/$version/$type/vendor/katsuna" push katsuna HEAD:${version:0:1}-dev
+        echo "${green}$patchdate fingerprints pushed to GitHub!${reset}"
+    else
+        echo "${yellow}NO vendor config file found for $device, skipping adding fingerprints!${reset}"
+    fi
+fi
+
+# Show the new fingerprint values & firmware filenames
+echo ""
+echo "${green}New fingerprint values:${reset}"
+echo "${green}fingerprint:${reset} $fingerprint"
+echo "${green}description:${reset} $description"
+echo ""
+echo "${green}New firmware files:${reset}"
+echo "${green}bootloader:${reset} $bootloader"
+echo "${green}radio:${reset} $radio"
+echo "${green}vendor:${reset} $vendor"
+
+if [[ $jenkins == "true" ]]; then
+    # Write the data into a file so jenkins can inject it into the post build steps
+    cat <<EOT > $HOME/firmware/jenkins.properties
+DEVICE=$device
+IMAGE_BUILD_ID=$build_id
+BOOTLOADER=${bootloader%.*}
+RADIO=${radio%.*}
+VENDOR=${vendor%.*}
+PATCHDATE=$patchdate
+DIFF_LINK=$diff_link
+EOT
+fi

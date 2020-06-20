@@ -1,0 +1,50 @@
+#!/bin/bash
+#
+#     Copyright (C) 2017 The Katsuna Project
+#     Copyright (C) 2017 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 0.1-beta
+
+# You will need to run these commands to install Katsuna server_scripts onto the server:
+#   apt install -y git-core
+#   git clone git@github.com:Katsuna/server_scripts /usr/local/bin/server_scripts
+#   /usr/local/bin/server_scripts/katsuna-install
+
+# Variables for color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Setting up generic script failure guards
+set -e
+set -o pipefail
+
+# Start of the main script
+
+if [ ! -f /etc/profile.d/katsuna-install-path.sh ]; then
+    echo "${green}Installing Katsuna server_scripts into PATH...${reset}"
+    cat << EOT >> /etc/profile.d/katsuna-install-path.sh
+# Set Katsuna server_scripts into PATH
+for dir in /usr/local/bin/server_scripts/*/; do
+    PATH="\${PATH}:\${dir}"
+done
+EOT
+    # Logout current user to force reload all changes
+    echo "${yellow}You have to logout and re-login NOW!${reset}"
+else
+    echo "${yellow}Katsuna server_scripts have already been installed into PATH, skipping...${reset}"
+fi

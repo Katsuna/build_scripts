@@ -1,0 +1,71 @@
+#!/bin/bash
+#
+#     Copyright (C) 2017 The Katsuna Project
+#     Copyright (C) 2017 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 0.3
+
+# Usage: katsuna-deploy-gradle APP_NAME APP_FILE APP_FILE_NAME
+# e.g. katsuna-deploy-gradle "KatsunaContacts" "android/nougat/dev/vendor/kapps/KatsunaContactsPrebuilt/KatsunaContactsPrebuilt.apk" "KatsunaContacts-v1.20-f942fkg9.apk"
+
+# Variables DO NOT Edit
+appname=$1
+appfile=$2
+appfilename=$3
+
+# Color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Setting up generic script failure guards
+set -e
+set -o pipefail
+
+# Start of the main script
+
+# Check for 3 arguments, else abort
+if [ $# -ne 3 ]; then
+    echo "${red}Illegal number of parameters!${reset}"
+    echo "${yellow}You should specify three arguments, APP_NAME APP_FILE APP_FILE_NAME"
+    echo "e.g. katsuna-deploy-gradle "KatsunaContacts" "android/nougat/dev/vendor/kapps/KatsunaContactsPrebuilt/KatsunaContactsPrebuilt.apk" "KatsunaContacts-v1.20-f942fkg9.apk"${reset}"
+    echo "Your input: katsuna-deploy-gradle $appname $appfile $appfilename"
+    exit 1
+fi
+
+# Use scp to copy files into katsuna-web*
+# The ssh key pair is located in ~/.ssh of katsuna-build1
+# The definition of katsuna-web* host is in ~/.ssh/config of katsuna-build1
+# EXAMPLE:
+# Host katsuna-web1
+#    HostName ***.***.***.***
+#    User root
+#    IdentityFile ~/.ssh/id_build2web
+#    IdentitiesOnly yes
+
+if [[ -f $appfile ]]; then
+    # Create directory if it doesn't exist
+    ssh katsuna-web1 "mkdir -p /var/www/updater/dev/files/kapps"
+    ssh katsuna-web1 "mkdir -p /var/www/updater/dev/files/kapps/$appname"
+
+    scp $appfile katsuna-web1:/var/www/updater/dev/files/kapps/$appname/$appfilename
+    echo "${green}Files pushed to katsuna-web1 ONLY (dev build!) successfully!${reset}"
+else
+    echo "${red}Error: no such file or directory"
+    echo "${red}Files couldn't be pushed to katsuna-web*${reset}"
+    exit 1
+fi

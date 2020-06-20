@@ -1,0 +1,202 @@
+#!/bin/bash
+#
+#     Copyright (C) 2018 The Katsuna Project
+#     Copyright (C) 2018 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 0.1
+
+# Run the script
+# ./katsuna-build-local-init
+# You can also execute specific functions by directly using their name, e.g:
+#   katsuna-build-local-init "setJDK" "8"
+# Lastly, you can trigger a DEBUG run:
+#   katsuna-build-local-init "DEBUG"
+#   katsuna-build-local-init "setJDK" "8" "DEBUG"
+
+# IMPORTANT: Edit the variables HERE:
+# OpenJDK major version (e.g. 7 or 8)
+JAVASDK=8
+# Katsuna Android versions to download
+# This is the default configuration. If an override is needed, the necessary Variables
+# should be exported to either "true" or "false" in the current shell
+# e.g. $ export GET_NOUGAT=false
+if [ -z $GET_MM ]; then
+    GET_MM=false
+fi
+if [ -z $GET_NOUGAT ]; then
+    GET_NOUGAT=false
+fi
+if [ -z $GET_OREO ]; then
+    GET_OREO=true
+fi
+
+# Variables for color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Setting up generic script failure guards
+set -e
+set -o pipefail
+
+function depInstall() {
+    echo "${yellow}3. Fetching newest dependency packages...${reset}"
+    apt update
+    if [ "$1" == "DEBUG" ]; then
+        echo "${red}DEBUG: installing debugging only dependencies${reset}"
+        apt install -y sudo git-core curl
+    else
+        apt install -y automake bc bison build-essential bzip2 ccache curl dpkg-dev flex \
+        gperf gnupg gcc-multilib g++-multilib libbz2-dev libbz2-1.0 libc6-dev-i386 \
+        libgl1-mesa-dev libghc-bzlib-dev liblz4-tool libxml2-utils libx11-dev \
+        lib32ncurses5-dev lib32z-dev lzop make openjdk-8-jdk optipng pngcrush \
+        python-networkx sudo schedtool software-properties-common squashfs-tools unzip \
+        x11proto-core-dev xsltproc zip zlib1g-dev rubygems ruby-dev python-git
+    fi
+    echo "${green}Dependencies installed!${reset}"
+    echo ""
+}
+
+function setJDK () {
+    echo "${cyan}4. Setting the correct Java JDK version ($1)${reset}"
+    if [ "$2" == "DEBUG" ]; then
+        echo "${red}DEBUG: we would set Java JDK to version $1 ${reset}"
+    elif [ "$(command -v java)" ]; then
+        if [[ "$1" -eq 7 || "$1" -eq 8 ]]; then
+            update-alternatives --set java "/usr/lib/jvm/java-$1-openjdk-amd64/jre/bin/java"
+            update-alternatives --set javac "/usr/lib/jvm/java-$1-openjdk-amd64/bin/javac"
+        else
+            echo "${red}You didn't specify a number (e.g. 7 or 8)${reset}"
+        fi
+        java -version
+        javac -version
+    else
+        echo "${red}Your Java JDK installation must be broken or missing, skipping...${reset}"
+    fi
+    echo ""
+}
+
+function installRepo() {
+    echo "${cyan}5. Installing Google's repo tool...${reset}"
+    curl http://commondatastorage.googleapis.com/git-repo-downloads/repo > /usr/local/bin/repo
+    chmod a+x /usr/local/bin/repo
+    echo ""
+}
+
+function preAddGithub() {
+    echo "${yellow}7. Checking if Github.com is added to known_hosts${reset}"
+    if ! ssh-keygen -H  -F github.com; then
+        echo "${cyan}Key not found, pre-adding Github.com to known_hosts${reset}"
+        ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+        chmod 600 /root/.ssh/known_hosts
+    else
+        echo "${yellow}Github.com is already added to known_hosts, skipping...${reset}"
+    fi
+    echo ""
+}
+
+function downloadROM() {
+    echo "${yellow}8. Finally, creating ROM directories...${reset}"
+    if [[ "$GET_MM" == "true" ]]; then
+        echo "Marshmallow source will be downloaded."
+        mkdir -p mm/dev
+    fi
+    if [[ "$GET_NOUGAT" == "true" ]]; then
+        echo "Nougat source will be downloaded."
+        mkdir -p nougat/dev
+    fi
+    if [[ "$GET_OREO" == "true" ]]; then
+        echo "Oreo source will be downloaded."
+        mkdir -p oreo/dev
+    fi
+    if [[ "$GET_MM" == "false" && "$GET_NOUGAT" == "false" && "$GET_OREO" == "false" ]] ; then
+      echo "${red}ERROR: the script is not configured correctly, no source code is" \
+           "supposed to be downloaded. Please edit the script, modify the necessary" \
+           "variables per need or export them in the current shell and re-execute it.${reset}"
+      exit 1
+    fi
+
+    find . -mindepth 2 -maxdepth 2 -type d | sort -n | while read folder; do
+        cd $folder
+        # Grab branch and android version variables (e.g n-dev)
+        branch_base=$(basename ${PWD%/*} | head -c 1)
+        branch_type=$(basename $PWD)
+        echo "${yellow}9. Fetching ROM manifest for '$branch_base-$branch_type' branch...${reset}"
+        repo init -u ssh://git@github.com/katsuna/manifest.git -b $branch_base-$branch_type
+        echo ""
+        if [ "$1" == "DEBUG" ]; then
+            echo "${red}DEBUG: repo sync of '$branch_base-$branch_type' skipped!${reset}"
+        else
+            katsuna-sync
+        fi
+        cd ~/
+    done
+
+    echo "${green}Sync completed!${reset}"
+    echo "${green}ROM source downloaded!${reset}"
+    echo ""
+}
+
+function enableCcache() {
+    echo "${cyan}11. Enabling CCACHE...${reset}"
+    if [ ! -f /etc/profile.d/use_ccache.sh ]; then
+        cat <<EOT >> /etc/profile.d/use_ccache.sh
+# Enable CCACHE
+export USE_CCACHE=1
+EOT
+    else
+        echo "${yellow}Ccache is enabled, skipping...${reset}"
+    fi
+
+    if [ -f prebuilts/misc/linux-x86/ccache/ccache ]; then
+        prebuilts/misc/linux-x86/ccache/ccache -M 100G
+    else
+        echo "${red}AOSP's ccache executable was not found, please check your setup!${reset}"
+    fi
+    echo ""
+}
+
+# Start of the main script
+clear
+echo ""
+echo "${green}Welcome!"
+echo "This script will setup various functions of your Katsuna build server!"
+echo "Sit back and enjoy!${reset}"
+echo ""
+
+# Allow running specific functions as script argument
+if [ "$1" ] && [ "$1" != "DEBUG" ]; then
+    $1 "${@:2}"
+    echo ""
+    echo "${green}'$1' finished.${reset}"
+    exit 0
+fi
+
+# Piping $1 into the functions that have a special "DEBUG" mode
+depInstall "$1"
+setJDK "$JAVASDK" "$1"
+installRepo
+preAddGithub
+downloadROM "$1"
+enableCcache
+
+echo "${green}####################################################${reset}"
+echo "${green}Done!${reset}"
+echo "${green}Your local Katsuna build system is ready to build.${reset}"
+echo "${green}use "katsuna-build-local" command to start a build.${reset}"
+echo "${green}####################################################${reset}"
+echo ""

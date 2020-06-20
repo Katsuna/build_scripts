@@ -1,0 +1,234 @@
+#!/bin/bash
+#
+#     Copyright (C) 2017-8 The Katsuna Project
+#     Copyright (C) 2017-8 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 4.8
+
+# Usage:
+# $ katsuna-build-gradle APP_NAME (all|KatsunaCalls|KatsunaContacts...) TYPE_NAME (dev|prod|public) ANDROID_VERSION (mm|nougat|oreo)
+#         (optional: FORCE_BUILD (true|false) JENKINS_INSTANCE (true|false))
+# e.g. katsuna-build-gradle all dev oreo true
+
+# Variables DO NOT EDIT
+app=$1
+type=$2
+version=$3
+force=$4
+jenkins=$5
+
+# Color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Setting up generic script failure guards
+set -o pipefail
+
+function cleanAndReset() {
+    # Clean everything because otherwise the AOSP build is going to fail due to
+    # duplicate R.classes of KatsunaCommon
+    ./gradlew clean
+    cd ../../../
+}
+
+# Start of the main script
+
+# Check for at least 3 arguments, else abort
+if (( $# < 3 )); then
+    echo "${red}Illegal number of parameters!${reset}"
+    echo "${yellow}You should specify at least three arguments, APP_NAME (all|KatsunaCalls|KatsunaContacts...) TYPE_NAME (dev|prod|public) ANDROID_VERSION (mm|nougat|oreo)"
+    echo "e.g. katsuna-build-gradle all dev oreo${reset}"
+    echo "Your input: katsuna-build-gradle $app $type $version $force $jenkins"
+    exit 1
+fi
+
+# cd into correct branch
+if [[ "$PWD" != *"/android/$version/$type/" ]]; then
+    cd ~/android/$version/$type
+    if [[ $? -ne 0 ]]; then
+        echo "${red}The version & type configuration path was not found! Try again${reset}"
+        exit 1
+    fi
+fi
+
+# Grab branch and android version variables (e.g n-dev)
+branch_base=$(basename ${PWD%/*} | head -c 1)
+branch_type=$(basename $PWD)
+
+# Set packages to be checked and built
+if [ "$app" == "all" ]; then
+    # Only these ones are supported right now
+    kapps=(
+        KatsunaCalendar
+        KatsunaCalls
+        KatsunaCamera
+        KatsunaClock
+        KatsunaContacts
+        KatsunaGallery
+        KatsunaInfoServices
+        KatsunaKeyboard
+        KatsunaLauncher
+        KatsunaMessages
+    )
+else
+    kapps=( $app )
+fi
+
+# Start iteration between all packages or a specific one (per argument)
+for i in "${kapps[@]}"; do
+    # Check if package exists
+    if [[ ! -d packages/apps/$i/ ]]; then
+        echo "${red}$i not found! Skipping${reset}"
+        echo ""
+        continue # Skip rest of this particular loop iteration
+    fi
+
+    echo "${yellow}Building $i...${reset}"
+
+    if [[ $jenkins != "true" ]]; then
+        # Sync upstream
+        katsuna-sync --force-sync packages/apps/$i/
+
+        # Sync upstream KatsunaCommon library
+        katsuna-sync --force-sync frameworks/KatsunaCommon/
+
+        # Grab latest HEAD commit of the app
+        currappcommit=$(git -C "packages/apps/$i/" rev-parse --short HEAD)
+    else
+        # Jenkins should have checked out a branch by now
+         echo "${cyan}JENKINS settings enabled...${reset}"
+        # Grab latest HEAD commit of the app
+        currappcommit=$(git -C "packages/apps/$i/" rev-parse --short HEAD)
+
+        # Use it to find the remote branch in KatsunaCommon
+        feature_branch=$(git -C "packages/apps/$i/" branch -a --contains $currappcommit)
+
+        # Check if same branch exists on KatsunaCommon
+        git -C "frameworks/KatsunaCommon" fetch
+        git -C "frameworks/KatsunaCommon" branch -a --contains remotes/katsuna/${feature_branch##*/}
+        if [[ $? -ne 0 ]]; then
+            # Public builds should default to dev
+            if [[ $type == "public" ]]; then
+                type="dev"
+            fi
+            # Feature branch doesn't exist, default to TYPE_NAME
+            feature_branch=$type
+        fi
+        # Check if local feature branch exists
+        git -C "frameworks/KatsunaCommon/" show-ref --verify --quiet refs/heads/${feature_branch##*/}
+        if [[ $? -eq 0 ]]; then
+            # Git pull remote updates
+            git -C "frameworks/KatsunaCommon/" checkout ${feature_branch##*/}
+            git -C "frameworks/KatsunaCommon/" pull katsuna ${feature_branch##*/}
+        else
+            # Create new local feature branch
+            git -C "frameworks/KatsunaCommon/" checkout -b ${feature_branch##*/} katsuna/${feature_branch##*/}
+        fi
+        echo "${cyan}KatsunaCommon repo is checked out to ${feature_branch##*/} branch${reset}"
+    fi
+
+    # Grab latest HEAD commit of the lib
+    currcommoncommit=$(git -C "frameworks/KatsunaCommon" rev-parse --short HEAD)
+    # Grab latest HEAD commit of the last built version
+    latestcommit=$(git -C "vendor/kapps/" log --grep $i | head -8)
+
+    # Move into app directory
+    cd packages/apps/$i/
+
+    # Check if they match, and avoid a new build. Allow a "force" modifier
+    if [[ $latestcommit != *"$currappcommit"* || $latestcommit != *"$currcommoncommit"* || $force == "true" ]]; then
+        if [[ $latestcommit == *"$currappcommit"* && $latestcommit != *"$currcommoncommit"* ]]; then
+            echo "${yellow}App version is the same but Common lib is not, still building!${reset}"
+        fi
+
+        # Start the Gradle build
+        # Load custom target if set
+        target=assembleRelease
+        if [[ -f "variant.gradle" ]]; then
+            target=$(cat variant.gradle)
+        fi
+        ./gradlew clean $target
+        result=$?
+
+        # Locate the produced apk
+        outputfile=$(find . -type f -name "*-release.apk")
+
+        if [[ ! -f $outputfile ]]; then
+            echo "${red}APK not found! Aborting${reset}"
+            cleanAndReset
+            continue # Skip rest of this particular loop iteration
+        fi
+
+        # Grab the versionname
+        versionname=$(basename $outputfile | cut -f2 -d'-')
+
+        # Create the filename
+        filename="$i-v$versionname-$currappcommit.apk"
+        # Create the final file
+        finalfile="$(dirname $outputfile)/$filename"
+        # Rename the apk
+        mv $outputfile $finalfile
+
+        if [[ $jenkins == "true" ]]; then
+            # Write the filename into a file so jenkins can inject it into the post build steps
+            echo FILENAME=$filename > jenkins.properties
+            # Also write the final file path. Remove the leading "./" dot first
+            echo FINALFILE="${finalfile#./}" >> jenkins.properties
+        fi
+
+        # The build is finished. We need to move the produced into vendor/kapps and
+        # commit accordingly
+        echo "${cyan}Installing $i into vendor/kapps...${reset}"
+        git -C "../../../vendor/kapps/" pull katsuna $branch_base-$branch_type
+        mkdir -p ../../../vendor/kapps/$i"Prebuilt"/
+        cp $finalfile ../../../vendor/kapps/$i"Prebuilt"/$i"Prebuilt.apk"
+        git -C "../../../vendor/kapps/" add $i"Prebuilt"/$i"Prebuilt.apk"
+        git -C "../../../vendor/kapps/" commit -F- <<EOF
+$i v$versionname-$currappcommit
+
+HEAD: https://github.com/Katsuna/packages_apps_$i/commit/$currappcommit
+KatsunaCommon: https://github.com/Katsuna/frameworks_KatsunaCommon/commit/$currcommoncommit
+EOF
+        git -C "../../../vendor/kapps/" push katsuna HEAD:$branch_base-$branch_type
+        echo ""
+        if [ $? -eq 0 ]; then
+            echo "${green}$i v$versionname-$currappcommit can now be found on Github!${reset}"
+        else
+            echo "${red} Error! Something didn't work right and Github push was not completed!${reset}"
+        fi
+
+        # the user running the script should have build2web keys
+        katsuna-deploy-gradle "$i" "$finalfile" "$filename"
+    else
+       # latest HEAD and HEAD commit of the last build version match; skip
+        echo "${yellow}No need to build, HEAD commit is the same!${reset}"
+       # Set the gradle result to 0
+       result=0
+    fi
+    # Jenkins handles it on its own with a post build step
+    if [[ $jenkins != "true" ]]; then
+        cleanAndReset
+    fi
+done
+# Completion notification
+if (( $result > 0 )); then
+   echo "${red}katsuna-build-gradle finished with errors.${reset}"
+else
+   echo "${green}katsuna-build-gradle finished.${reset}"
+fi
+exit $result

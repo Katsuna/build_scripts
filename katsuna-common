@@ -1,0 +1,96 @@
+#!/bin/bash
+#
+#     Copyright (C) 2018 The Katsuna Project
+#     Copyright (C) 2018 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 0.1
+
+# IMPORTANT: Edit the variables HERE:
+# OpenJDK major version (e.g. 7 or 8)
+JAVASDK=8
+
+# Variables for color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Setting up generic script failure guards
+set -e
+set -o pipefail
+
+function fixPerlWarning() {
+    if [ ! -f /etc/profile.d/fix_perl_warning.sh ]; then
+        echo "${green}1. Fixing perl language warning on Debian...${reset}"
+        #fix perl language warning
+        cat <<EOT >> /etc/profile.d/fix_perl_warning.sh
+# Fix perl language warning
+export LC_ALL=C
+EOT
+    else
+        echo "${yellow}1. Perl warning fix is already applied, skipping...${reset}"
+    fi
+    echo ""
+}
+
+function backportOpenJDK8() {
+    if [[ "$(cat /etc/debian_version)" == *"8"* ]]; then
+        if ! grep -q "jessie-backports" /etc/apt/sources.list; then
+            echo "${cyan}2. Backporting OpenJDK repository to Debian Jessie...${reset}"
+            # Add OpenJDK repositories
+            cat <<EOT >> /etc/apt/sources.list
+
+# Backport Testing on stable
+# JDK 8
+deb http://ftp.de.debian.org/debian jessie-backports main
+EOT
+        else
+            echo "${yellow}2. OpenJDK repository already added, skipping...${reset}"
+        fi
+    fi
+    echo ""
+}
+
+function setJDK () {
+    echo "${cyan}4. Setting the correct Java JDK version ($1)${reset}"
+    if [ "$2" == "DEBUG" ]; then
+        echo "${red}DEBUG: we would set Java JDK to version $1 ${reset}"
+    elif [ "$(command -v java)" ]; then
+        if [[ "$1" -eq 7 || "$1" -eq 8 ]]; then
+            update-alternatives --set java "/usr/lib/jvm/java-$1-openjdk-amd64/jre/bin/java"
+            update-alternatives --set javac "/usr/lib/jvm/java-$1-openjdk-amd64/bin/javac"
+        else
+            echo "${red}You didn't specify a number (e.g. 7 or 8)${reset}"
+        fi
+        java -version
+        javac -version
+    else
+        echo "${red}Your Java JDK installation must be broken or missing, skipping...${reset}"
+    fi
+    echo ""
+}
+
+function preAddGithub() {
+    echo "${yellow}8. Checking if Github.com is added to known_hosts${reset}"
+    if ! ssh-keygen -H  -F github.com; then
+        echo "${cyan}Key not found, pre-adding Github.com to known_hosts${reset}"
+        ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+        chmod 600 /root/.ssh/known_hosts
+    else
+        echo "${yellow}Github.com is already added to known_hosts, skipping...${reset}"
+    fi
+    echo ""
+}

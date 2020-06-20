@@ -1,0 +1,52 @@
+#!/bin/bash
+#
+#     Copyright (C) 2018 The Katsuna Project
+#     Copyright (C) 2018 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 0.3
+
+# Usage:
+# $ katsuna-publish-release DEVICE_NAME (angler|bullhead|taimen...)
+# e.g. katsuna-publish-release "bullhead"
+
+# Variables DO NOT EDIT
+device=$1
+
+# Color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Setting up generic script failure guards
+set -e
+set -o pipefail
+
+# Start of the main script
+
+# Check for one argument, else abort
+if [ $# -ne 1 ]; then
+    echo "${red}Illegal number of parameters!${reset}"
+    echo "${yellow}You should specify one argument only, DEVICE_NAME(angler|bullhead|taimen...)"
+    echo "e.g. 'katsuna-publish-release bullhead'${reset}"
+    echo "Your input: katsuna-publish-release $device"
+    exit 1
+fi
+
+echo "${yellow}Publishing Release build for $device...${reset}"
+ssh katsuna-web1 mv /var/www/updater/prod/public/$device-next.json /var/www/updater/prod/public/$device.json
+ssh katsuna-web2 mv /var/www/updater/prod/public/$device-next.json /var/www/updater/prod/public/$device.json
+echo "${green}katsuna-publish-release for $device finished!${reset}"

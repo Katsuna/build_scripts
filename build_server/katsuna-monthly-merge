@@ -1,0 +1,138 @@
+#!/bin/bash
+#
+#     Copyright (C) 2018 The Katsuna Project
+#     Copyright (C) 2018 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 0.61
+
+# Usage:
+# $ katsuna-monthly-merge TAG ANDROID_VERSION (mm|nougat|oreo)
+# e.g. katsuna-monthly-merge android-8.1.0_r46 oreo
+
+tag=$1
+version=$2
+
+# Script variables
+type=dev
+# overall script exit value
+result=0
+
+# Color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Set up generic script failure guards
+set -o pipefail
+
+# Start of the main script
+
+# Check for at least 2 arguments, else abort
+if (( $# < 2 )); then
+    echo "${red}Illegal number of parameters!${reset}"
+    echo "${yellow}You should specify at least two arguments, TAG ANDROID_VERSION (mm|nougat|oreo)"
+    echo "e.g. 'katsuna-monthly-merge android-8.1.0_r46 oreo${reset}"
+    echo "Your input: katsuna-monthly-merge $tag $version"
+    exit 1
+fi
+
+# Check if right directory inside AOSP source
+if [[ "$PWD" != *"$HOME/android/$version/$type"* ]]; then
+    cd $HOME/android/$version/$type
+fi
+
+# Update manifest
+sed -i -e "s#default revision=\".*\"#default revision=\"refs/tags/$tag\"#g" .repo/manifests/default.xml
+sed -i -e "s#latest is .*#latest is $(echo $tag | cut -d '-' -f2)\)#g" .repo/manifests/README.md
+# Commit the changes
+git -C "$HOME/android/$version/$type/.repo/manifests" add .
+git -C "$HOME/android/$version/$type/.repo/manifests" commit -m "Android Release $tag"
+git -C "$HOME/android/$version/$type/.repo/manifests" push origin HEAD:${version:0:1}-dev
+echo "${green}Katsuna manifest updated to $tag and pushed to GitHub!${reset}"
+echo ""
+
+aosp_forks=(
+    "bootable/recovery"
+    "build/make"
+    "device/generic/goldfish"
+    "device/google/marlin"
+    "device/huawei/angler"
+    "device/lge/bullhead"
+    "external/bison"
+    "frameworks/base"
+    "packages/apps/Dialer"
+    "packages/apps/Settings"
+    "packages/services/Telecomm"
+    "prebuilts/misc"
+    "system/core"
+)
+
+for repo in "${aosp_forks[@]}"; do
+    echo "Repo: ${yellow}$repo${reset}"
+    git -C "$HOME/android/$version/$type/$repo" ls-remote aosp &>-
+    if [ "$?" -ne 0 ]; then
+        echo "${yellow}There is no 'aosp' remote for $repo, adding... ${reset}"
+        if [[ "$repo" != *"device"* ]]; then
+            # Special case for build repo
+            if [[ "$repo" == *"build/make"* ]]; then
+                git -C "$HOME/android/$version/$type/$repo" remote add -f aosp https://android.googlesource.com/platform/build >/dev/null
+            else
+                git -C "$HOME/android/$version/$type/$repo" remote add -f aosp https://android.googlesource.com/platform/$repo >/dev/null
+            fi
+        else
+            git -C "$HOME/android/$version/$type/$repo" remote add -f aosp https://android.googlesource.com/$repo >/dev/null
+        fi
+    else
+        echo "${cyan}'aosp' remote found, fetching... ${reset}"
+        git -C "$HOME/android/$version/$type/$repo" fetch aosp >/dev/null
+    fi
+    git -C "$HOME/android/$version/$type/$repo" merge --no-edit $tag
+    if [ "$?" -eq 0 ]; then
+        echo "${green}$tag was merged successfully on $repo!${reset}"
+        # Find out correct remote branch to push to
+        remote_branch=$(xmlstarlet sel -t -v "//project[@path=\"$repo\"]/@revision" .repo/manifests/katsuna/katsuna.xml)
+        if [[ "$remote_branch" == "" ]]; then
+            # We assume it should be pushed to the default revision
+            branch=${version:0:1}
+        else
+            branch=$remote_branch
+        fi
+        git -C "$HOME/android/$version/$type/$repo" push katsuna HEAD:$branch
+    else
+        echo "${yellow}There are merge conflicts on $repo! Fix them and re-run ${reset}"
+        echo "${yellow}'katsuna-monthly-merge $tag $version' manually after this script finishes!${reset}"
+        result=1
+        break
+    fi
+    echo ""
+done
+
+if (( $result == 0 )); then
+    # Fetch every change from Katsuna GitHub
+    echo "${cyan}Trying to fetch from Github again... ${reset}"
+    katsuna-sync --force-sync
+    if [ "$?" -eq 0 ]; then
+        echo "${green}katsuna-monthly-merge finished.${reset}"
+    else
+        echo "${red}katsuna-monthly-merge finished with errors!${reset}"
+    fi
+else
+    echo "${red}katsuna-monthly-merge finished with errors!${reset}"
+fi
+
+# Go back to $HOME for seamless script alignment
+cd $HOME

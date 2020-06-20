@@ -1,0 +1,120 @@
+#!/bin/bash
+#
+#     Copyright (C) 2017-8 The Katsuna Project
+#     Copyright (C) 2017-8 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 2.97
+
+# Usage:
+# $ katsuna-build DEVICE_NAME TYPE_NAME (dev|prod|public) ANDROID_VERSION (mm|nougat|oreo) JENKINS_INSTANCE (true|false) (optional: RELEASE_BOOL (true|false))
+# e.g. katsuna-build "bullhead" "dev" "oreo" "true" or katsuna-build "bullhead" "dev" "oreo" "false" "true"
+
+# Variables DO NOT EDIT
+device=$1
+type=$2
+version=$3
+jenkins=$4
+release=$5
+
+# Color output
+green=`tput setaf 2`
+cyan=`tput setaf 6`
+red=`tput setaf 1`
+yellow=`tput setaf 3`
+reset=`tput sgr0`
+
+# Setting up generic script failure guards
+set -o pipefail
+
+function killJack() {
+    # This deals with AOSP Jack leaving behind processes and then the server crashes or can't be connected
+    # pgrep instead of grep to avoid listing itself as a result
+    limboprocesses=`ps -aux | grep jack | grep -v grep | awk -F' ' '{print $2}'`
+    if [ -n "$limboprocesses" ]; then
+        # NOTICE: this requires root access
+        sudo kill $limboprocesses
+    fi
+}
+
+function envClean() {
+    if [ "$dirtybuild" == "true" ]; then
+        # delete only minimum components of the last build
+        mka dirty
+    else
+        # Clean old output
+        mka clean
+    fi
+}
+
+# Start of the main script
+
+# Check for at least 4 arguments, else abort
+if (( $# < 4 )); then
+    echo "${red}Illegal number of parameters!${reset}"
+    echo "${yellow}You should specify at least four arguments, DEVICE_NAME TYPE_NAME (dev|prod|public) ANDROID_VERSION (mm|nougat|oreo) JENKINS_INSTANCE (true|false) (optional: RELEASE_BOOL (true|false))"
+    echo "e.g. 'katsuna-build bullhead dev oreo true' or 'katsuna-build bullhead dev oreo false true'${reset}"
+    echo "Your input: katsuna-build $device $type $version $jenkins $release"
+    exit 1
+fi
+# Kill every Jack server instance
+killJack
+# cd into correct branch
+if [[ "$PWD" != *"/android/$version/$type"* ]]; then
+    cd android/$version/$type
+fi
+# Fetch every change from Katsuna GitHub
+# Switch specified projects back to the manifest revision
+until katsuna-sync --force-sync --detach
+do
+  echo "${yellow}katsuna-sync finished with errors, retrying...${reset}"
+done
+# Tag the filename of a private build
+if [[ $release != "true" ]]; then
+    export EXTRA_BUILD_TAG=$(date +"%Hh%Im")-$type
+fi
+# Load the AOSP build environment
+source build/envsetup.sh
+# Clean the environment
+envClean
+# Clean jenkins file
+if [[ $jenkins == "true" ]]; then
+    # Remove previous file
+    rm -f jenkins.properties
+fi
+# Lunch the correct device configuration
+lunch katsuna_$device-userdebug
+# Build Katsuna apps with Gradle first
+katsuna-build-gradle all $type $version
+# Start building
+mka otapackage
+# Get AOSP build result
+build_result=$?
+# Kill every Jack server instance AGAIN (allow the system to be able to build anything)
+killJack
+if (( $build_result == 0 )); then
+    # Pull the otapackage (build) .zip Name
+    otapackage=$(find $OUT -maxdepth 1 -type f -name "*.zip" | xargs ls -t | head -n1)
+    # Get current API/SDK version
+    api=$TARGET_SDK_VERSION
+    # Push build to Katsuna updater-server
+    katsuna-deploy $otapackage $device $api $type $jenkins $release
+    # Completion notification
+    echo "${green}katsuna-build finished.${reset}"
+else
+    echo "${red}katsuna-build finished with errors!${reset}"
+fi
+# Clean the environment again
+envClean
+exit $build_result

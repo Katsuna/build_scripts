@@ -1,0 +1,220 @@
+#!/bin/bash
+#
+#     Copyright (C) 2016-8 The Katsuna Project
+#     Copyright (C) 2016-8 KreAch3R
+#
+#     Licensed under the Apache License, Version 2.0 (the "License");
+#     you may not use this file except in compliance with the License.
+#     You may obtain a copy of the License at
+#
+#          http://www.apache.org/licenses/LICENSE-2.0
+#
+#     Unless required by applicable law or agreed to in writing, software
+#     distributed under the License is distributed on an "AS IS" BASIS,
+#     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+#     See the License for the specific language governing permissions and
+#     limitations under the License.
+
+# Version: 1.6
+
+# Run the script (assuming Katsuna server_scripts are correctly installed and in PATH)
+# katsuna-build-init
+# You can also execute specific functions by directly using their name, e.g:
+#   katsuna-build-init "fixPerlWarning"
+#   katsuna-build-init "setJDK" "8"
+# Lastly, you can trigger a DEBUG run:
+#   katsuna-build-init "DEBUG"
+#   katsuna-build-init "setJDK" "8" "DEBUG"
+
+# Variables DO NOT EDIT
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+
+# Source common Katsuna functions
+source $DIR/../katsuna-common
+
+# Katsuna Android versions to download
+# This is the default configuration. If an override is needed, the necessary Variables
+# should be exported to either "true" or "false" in the current shell
+# e.g. $ export GET_NOUGAT=false
+if [ -z $GET_MM ]; then
+    GET_MM=false
+fi
+if [ -z $GET_NOUGAT ]; then
+    GET_NOUGAT=true
+fi
+if [ -z $GET_OREO ]; then
+    GET_OREO=true
+fi
+
+function depInstall() {
+    echo "${yellow}3. Fetching newest dependency packages...${reset}"
+    apt update
+    if [ "$1" == "DEBUG" ]; then
+        echo "${red}DEBUG: installing debugging only dependencies${reset}"
+        apt install -y sudo git-core curl
+    else
+        apt install -y automake bc bison build-essential bzip2 ca-certificates-java \
+        ccache curl dpkg-dev flex gperf gnupg gcc-multilib g++-multilib libbz2-dev \
+        libbz2-1.0 libc6-dev-i386 libgl1-mesa-dev libghc-bzlib-dev liblz4-tool \
+        libxml2-utils libx11-dev lib32ncurses5-dev lib32z-dev lzop make openjdk-8-jdk \
+        optipng pngcrush python-networkx sudo schedtool software-properties-common \
+        squashfs-tools unzip x11proto-core-dev xsltproc zip zlib1g-dev rubygems \
+        ruby-dev python-git xmlstarlet
+    fi
+    echo "${green}Dependencies installed!${reset}"
+    echo ""
+}
+
+function installRepo() {
+    echo "${cyan}5. Installing Google's repo tool...${reset}"
+    curl http://commondatastorage.googleapis.com/git-repo-downloads/repo > /usr/local/bin/repo
+    chmod a+x /usr/local/bin/repo
+    echo ""
+}
+
+function installGitLFS() {
+    echo "${cyan}6. Installing GitHub lfs...${reset}"
+    curl -s https://packagecloud.io/install/repositories/github/git-lfs/script.deb.sh | bash
+    apt install git-lfs
+    git lfs install
+    echo ""
+}
+
+function setGitVars() {
+    echo "${cyan}7. Setting git config global values${reset}"
+    echo "user.name = katsuna_builder"
+    git config --global user.name "katsuna_builder"
+    echo "user.email = katsuna_builder@users.noreply.github.com"
+    git config --global user.email "katsuna_builder@users.noreply.github.com"
+    git config --global color.ui true
+    echo ""
+}
+
+function downloadROM() {
+    echo "${yellow}9. Finally, creating ROM directories...${reset}"
+    mkdir -p ~/android
+    if [[ "$GET_MM" == "true" ]]; then
+        echo "Marshmallow source will be downloaded."
+        mkdir -p ~/android/mm/dev
+        mkdir -p ~/android/mm/prod
+    fi
+    if [[ "$GET_NOUGAT" == "true" ]]; then
+        echo "Nougat source will be downloaded."
+        mkdir -p ~/android/nougat/dev
+        mkdir -p ~/android/nougat/prod
+    fi
+    if [[ "$GET_OREO" == "true" ]]; then
+        echo "Oreo source will be downloaded."
+        mkdir -p ~/android/oreo/dev
+        mkdir -p ~/android/oreo/prod
+    fi
+    if [[ "$GET_MM" == "false" && "$GET_NOUGAT" == "false" && "$GET_OREO" == "false" ]] ; then
+      echo "${red}ERROR: the script is not configured correctly, no source code is" \
+           "supposed to be downloaded. Please edit the script, modify the necessary" \
+           "variables per need or export them in the current shell and re-execute it.${reset}"
+      exit 1
+    fi
+
+    find ~/android/ -mindepth 2 -maxdepth 2 -type d | sort -n | while read folder; do
+        cd $folder
+        # Grab branch and android version variables (e.g n-dev)
+        branch_base=$(basename ${PWD%/*} | head -c 1)
+        branch_type=$(basename $PWD)
+        echo "${yellow}10. Fetching ROM manifest for '$branch_base-$branch_type' branch...${reset}"
+        repo init -u ssh://git@github.com/katsuna/manifest.git -b $branch_base-$branch_type
+        echo ""
+        if [ "$1" == "DEBUG" ]; then
+            echo "${red}DEBUG: repo sync of '$branch_base-$branch_type' skipped!${reset}"
+        else
+            katsuna-sync
+        fi
+        cd ~/
+    done
+
+    echo "${green}Sync completed!${reset}"
+    echo "${green}ROM source downloaded!${reset}"
+    echo ""
+}
+
+function enableCcache() {
+    echo "${cyan}11. Enabling CCACHE...${reset}"
+    if [ ! -f /etc/profile.d/use_ccache.sh ]; then
+        cat <<EOT >> /etc/profile.d/use_ccache.sh
+# Enable CCACHE
+export USE_CCACHE=1
+EOT
+    else
+        echo "${yellow}Ccache is enabled, skipping...${reset}"
+    fi
+
+    if [ -f prebuilts/misc/linux-x86/ccache/ccache ]; then
+        prebuilts/misc/linux-x86/ccache/ccache -M 100G
+    else
+        echo "${red}AOSP's ccache executable was not found, please check your setup!${reset}"
+    fi
+    echo ""
+}
+
+function installAndroidSDK() {
+    echo "${cyan}12. Setting up Android SDK...${reset}"
+    echo "${cyan}Exporting ANDROID_HOME...${reset}"
+    if [ ! -f /etc/profile.d/android_home.sh ]; then
+        cat <<EOT >> /etc/profile.d/android_home.sh
+# Android SDK Location
+export ANDROID_HOME=~/sdk
+EOT
+    else
+        echo "${yellow}ANDROID_HOME is set, skipping...${reset}"
+    fi
+
+    mkdir -p ~/sdk
+    wget https://dl.google.com/android/repository/sdk-tools-linux-3859397.zip -P /tmp/
+    unzip /tmp/sdk-tools-linux-3859397.zip -d ~/sdk/
+    ~/sdk/tools/bin/sdkmanager --update
+    echo -e "y" | ~/sdk/tools/bin/sdkmanager --licenses
+    ~/sdk/tools/bin/sdkmanager "platforms;android-25" "platforms;android-26" \
+    "build-tools;25.0.2" "build-tools;26.0.3" "extras;google;m2repository" \
+    "extras;android;m2repository" "platform-tools"
+
+    echo "${green}Android SDK setup is completed!${reset}"
+    echo ""
+}
+
+# Start of the main script
+clear
+echo ""
+echo "${green}Welcome!"
+echo "This script will setup various functions of your Katsuna build server!"
+echo "Sit back and enjoy!${reset}"
+echo ""
+
+# Allow running specific functions as script argument
+if [ "$1" ] && [ "$1" != "DEBUG" ]; then
+    $1 "${@:2}"
+    echo ""
+    echo "${green}'$1' finished.${reset}"
+    exit 0
+fi
+
+# Piping $1 into the functions that have a special "DEBUG" mode
+fixPerlWarning
+backportOpenJDK8
+depInstall "$1"
+setJDK "$JAVASDK" "$1"
+installRepo
+installGitLFS
+setGitVars
+preAddGithub
+downloadROM "$1"
+enableCcache
+installAndroidSDK
+
+echo "${green}####################################################${reset}"
+echo "${green}Done!${reset}"
+echo "${green}Your Katsuna build server is ready to build.${reset}"
+echo "${green}use "katsuna-build" command to start a build.${reset}"
+echo "${green}####################################################${reset}
+echo ""
+
+# Logout current user to force reload all changes
+echo "${yellow}You have to logout and re-login NOW!${reset}"
